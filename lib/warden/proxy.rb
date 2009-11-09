@@ -36,8 +36,16 @@ module Warden
     #   env['warden'].authenticated?(:admin)
     # :api: public
     def authenticated?(scope = :default)
-      !raw_session["warden.user.#{scope}.key"].nil?
+      result = !raw_session["warden.user.#{scope}.key"].nil? || !!user(scope)
+      yield if block_given? && result
+      result
     end # authenticated?
+
+    def unauthenticated?(scope = :default)
+      result = !authenticated?(scope)
+      yield if block_given? && result
+      result
+    end
 
     # Run the authentiation strategies for the given strategies.
     # If there is already a user logged in for a given scope, the strategies are not run
@@ -52,8 +60,7 @@ module Warden
     #   env['auth'].authenticate(:password, :basic, :scope => :sudo)
     # :api: public
     def authenticate(*args)
-      scope = scope_from_args(args)
-      _perform_authentication(*args)
+      scope, opts = _perform_authentication(*args)
       user(scope)
     end
 
@@ -65,9 +72,7 @@ module Warden
     #
     # :api: public
     def authenticate!(*args)
-      opts = opts_from_args(args)
-      scope = scope_from_args(args)
-      _perform_authentication(*args)
+      scope, opts = _perform_authentication(*args)
       throw(:warden, opts.merge(:action => :unauthenticated)) if !user(scope)
       user(scope)
     end
@@ -76,11 +81,11 @@ module Warden
     #
     # Parameters:
     #   user - An object that has been setup to serialize into and out of the session.
-    #   opts - An options hash.  Use the :scope option to set the scope of the user
+    #   opts - An options hash.  Use the :scope option to set the scope of the user, set the :store option to false to skip serializing into the session.
     # :api: public
     def set_user(user, opts = {})
       scope = (opts[:scope] ||= :default)
-      Warden::Manager._store_user(user, raw_session, scope) # Get the user into the session
+      Warden::Manager._store_user(user, raw_session, scope) unless opts[:store] == false# Get the user into the session
 
       # Run the after hooks for setting the user
       Warden::Manager._after_set_user.each{|hook| hook.call(user, self, opts)}
@@ -137,6 +142,12 @@ module Warden
     #
     # :api: public
     def logout(*scopes)
+      # Run before_logout hooks for each scoped user
+      @users.each do |scope, user|
+        next unless scopes.empty? || scopes.include?(scope)
+        Warden::Manager._before_logout.each { |hook| hook.call(user, self, scope) }
+      end
+
       if scopes.empty?
         reset_session!
         @users.clear
@@ -181,21 +192,28 @@ module Warden
       opts = opts_from_args(args)
 
       # Look for an existing user in the session for this scope
-      if the_user = user(scope)
-        return the_user
-      end
-
       # If there was no user in the session.  See if we can get one from the request
+      return scope, opts if the_user = user(scope)
+
       strategies = args.empty? ? @strategies : args
-      raise "No Strategies Found" if strategies.empty? || !(strategies - Warden::Strategies._strategies.keys).empty?
+      raise "No Strategies Found" if strategies.empty?
+
       strategies.each do |s|
-        strategy = Warden::Strategies[s].new(@env, @conf)
+        unless Warden::Strategies[s]
+          if args.empty? && @config[:silence_missing_strategies]
+            next
+          else
+            raise "Invalid strategy #{s}"
+          end
+        end
+
+        strategy = Warden::Strategies[s].new(@env, scope, @conf)
         self.winning_strategy = strategy
         next unless strategy.valid?
+
         strategy._run!
         break if strategy.halted?
       end
-
 
       if winning_strategy && winning_strategy.user
         set_user(winning_strategy.user, opts)
@@ -204,7 +222,7 @@ module Warden
         Warden::Manager._after_authentication.each{|hook| hook.call(winning_strategy.user, self, opts)}
       end
 
-      winning_strategy
+      [scope, opts]
     end
 
     # :api: private

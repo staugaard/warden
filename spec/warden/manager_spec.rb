@@ -12,14 +12,6 @@ describe Warden::Manager do
     env["warden"].should be_an_instance_of(Warden::Proxy)
   end
 
-  describe "user storage" do
-    it "should take a user and store it in the provided session" do
-      session = {}
-      Warden::Manager._store_user("The User", session, "some_scope")
-      session["warden.user.some_scope.key"].should == "The User"
-    end
-  end
-
   describe "thrown auth" do
     before(:each) do
       @basic_app = lambda{|env| [200,{'Content-Type' => 'text/plain'},'OK']}
@@ -215,5 +207,27 @@ describe Warden::Manager do
       end
     end
   end # integrated strategies
+  
+  it "should allow me to set a different default scope for warden" do
+    Warden::Manager.default_scope.should == :default
+    Warden::Manager.default_scope = :other_scope
+    Warden::Manager.default_scope.should == :other_scope
+    Warden::Manager.default_scope = :default
+  end
 
+  it "should allow me to access serializers through manager" do
+    Rack::Builder.new do
+       use Warden::Manager do |manager|
+         manager.serializers.should == Warden::Serializers
+       end
+     end
+  end
+
+  it "should allow me to access serializers through manager" do
+    Rack::Builder.new do
+       use Warden::Manager do |manager|
+         manager.strategies.should == Warden::Strategies
+       end
+     end
+  end
 end

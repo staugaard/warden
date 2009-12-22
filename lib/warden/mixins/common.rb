@@ -8,13 +8,22 @@ module Warden
       def session
         env['rack.session']
       end # session
-      alias_method :raw_session, :session
 
-      # Convenience method to access the rack request
+      # Alias :session to :raw_session since the former will be user API for storing scoped data.
+      alias :raw_session :session
+
+      # Convenience method to access the rack request.
       # :api: public
       def request
         @request ||= Rack::Request.new(@env)
       end # request
+
+      # Convenience method to access the rack response. This should be replaced by the
+      # actual response returned to the client.
+      # :api: public
+      def response
+        @response ||= Rack::Response.new(@env)
+      end # response
 
       # Convenience method to access the rack request params
       # :api: public

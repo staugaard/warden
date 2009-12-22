@@ -1,10 +1,14 @@
 # encoding: utf-8
+require 'warden/hooks'
+
 module Warden
   # The middleware for Rack Authentication
   # The middlware requires that there is a session upstream
   # The middleware injects an authentication object into
   # the rack environment hash
   class Manager
+    extend Warden::Hooks
+
     attr_accessor :config, :failure_app
 
     # initialize the middleware.
@@ -18,14 +22,36 @@ module Warden
 
       # Should ensure there is a failure application defined.
       @failure_app = config[:failure_app] if config[:failure_app]
-      raise "No Failure App provided" unless @failure_app
+
+      # Set default configuration values.
+      @config[:default_strategies]  ||= []
+      @config[:default_serializers] ||= [ :session ]
+
       self
     end
+    
+    # Get the default scope for Warden.  By default this is :default
+    # @api public
+    def self.default_scope
+      @default_scope
+    end
+    
+    # Set the default scope for Warden.  
+    def self.default_scope=(scope)
+      @default_scope = scope
+    end
+    @default_scope = :default
 
     # Do not raise an error if a missing strategy is given by default.
     # :api: plugin
     def silence_missing_strategies!
       @config[:silence_missing_strategies] = true
+    end
+
+    # Do not raise an error if a missing serializer is given by default.
+    # :api: plugin
+    def silence_missing_serializers!
+      @config[:silence_missing_serializers] = true
     end
 
     # Set the default strategies to use.
@@ -36,6 +62,28 @@ module Warden
       else
         @config[:default_strategies] = strategies.flatten
       end
+    end
+
+    # Set the default serializers to use. By default, only session is enabled.
+    # :api: public
+    def default_serializers(*serializers)
+      if serializers.empty?
+        @config[:default_serializers]
+      else
+        @config[:default_serializers] = serializers.flatten
+      end
+    end
+
+    # Quick accessor to strategies from manager
+    # :api: public
+    def serializers
+      Warden::Serializers
+    end
+
+    # Quick accessor to strategies from manager
+    # :api: public
+    def strategies
+      Warden::Strategies
     end
 
     # :api: private
@@ -64,21 +112,6 @@ module Warden
 
     class << self
 
-      # Does the work of storing the user in the session
-      # :api: private
-      def _store_user(user, session, scope = :default) # :nodoc:
-        return nil unless user
-        session["warden.user.#{scope}.key"] = serialize_into_session.call(user)
-      end
-
-      # Does the work of fetching the user from the session
-      # :api: private
-      def _fetch_user(session, scope = :default) # :nodoc:
-        key = session["warden.user.#{scope}.key"]
-        return nil unless key
-        serialize_from_session.call(key)
-      end
-
       # Prepares the user to serialize into the session.
       # Any object that can be serialized into the session in some way can be used as a "user" object
       # Generally however complex object should not be stored in the session.
@@ -87,10 +120,21 @@ module Warden
       # Example:
       #   Warden::Manager.serialize_into_session{ |user| user.id }
       #
+      # Deprecation:
+      #   This method was deprecated in favor of serializer in Session. You can set it while setting the middleware:
+      #
+      #   use Warden::Manager do |manager|
+      #     manager.serializers.update(:session) do
+      #       def serialize(user)
+      #         user.id
+      #       end
+      #     end
+      #   end
+      #
       # :api: public
       def serialize_into_session(&block)
-        @serialize_into_session = block if block_given?
-        @serialize_into_session ||= lambda{|user| user}
+        warn "[DEPRECATION] serialize_into_session is deprecated. Please overwrite the serialize method in Warden::Serializers::Session."
+        Warden::Serializers::Session.send :define_method, :serialize, &block
       end
 
       # Reconstitues the user from the session.
@@ -99,10 +143,21 @@ module Warden
       # Example:
       #   Warden::Manager.serialize_from_session{ |id| User.get(id) }
       #
+      # Deprecation:
+      #   This method was deprecated in favor of serializer in Session. You can set it while setting the middleware:
+      #
+      #   use Warden::Manager do |manager|
+      #     manager.serializers.update(:session) do
+      #       def deserialize(id)
+      #         User.get(id)
+      #       end
+      #     end
+      #   end
+      #
       # :api: public
-      def serialize_from_session(&blk)
-        @serialize_from_session = blk if block_given?
-        @serialize_from_session ||= lambda{|key| key}
+      def serialize_from_session(&block)
+        warn "[DEPRECATION] serialize_from_session is deprecated. Please overwrite the deserialize method in Warden::Serializers::Session."
+        Warden::Serializers::Session.send :define_method, :deserialize, &block
       end
     end
 
@@ -135,7 +190,7 @@ module Warden
 
         # Call the before failure callbacks
         Warden::Manager._before_failure.each{|hook| hook.call(env,opts)}
-
+        raise "No Failure App provided" unless @failure_app
         @failure_app.call(env).to_a
       end
     end # call_failure_app
